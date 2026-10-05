@@ -20,7 +20,8 @@ from extract_research_view import Invalid, atomic, digest, now, read_json
 class NativeBrowserTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.base = Path(self.temp.name)
+        # Match the production entrypoint: Windows TEMP may contain an 8.3 alias.
+        self.base = Path(self.temp.name).resolve()
         self.run = Path(w.initialize(None, None, self.base, collect_config=c.configuration("2026-10-04"))["run"])
         self.allowed = {"devtools_authorized": True, "host_allows_devtools": True}
 
