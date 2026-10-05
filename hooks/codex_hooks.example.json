@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "python /absolute/skill/hooks/codex_guard.py", "timeout": 15}]}],
+    "PreToolUse": [{"matcher": "Bash|exec_command|functions\\.exec_command|apply_patch|Edit|Write|functions\\.apply_patch", "hooks": [{"type": "command", "command": "python /absolute/skill/hooks/codex_guard.py", "timeout": 15}]}],
+    "PostToolUse": [{"matcher": "Bash|exec_command|functions\\.exec_command|apply_patch|Edit|Write|functions\\.apply_patch", "hooks": [{"type": "command", "command": "python /absolute/skill/hooks/codex_guard.py", "timeout": 15}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python /absolute/skill/hooks/codex_guard.py", "timeout": 15}]}]
+  }
+}

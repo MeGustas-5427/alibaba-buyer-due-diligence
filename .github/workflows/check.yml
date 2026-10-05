@@ -1,0 +1,13 @@
+name: Offline checks
+on: [push, pull_request]
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements.txt
+      - run: python -X utf8 -m unittest discover -s tests -p "test_*.py" -v
+      - run: python -X utf8 tests/test_screen_uk_sanctions.py
