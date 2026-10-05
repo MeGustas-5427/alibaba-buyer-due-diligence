@@ -1,5 +1,7 @@
 # Alibaba Buyer Due Diligence
 
+![Alibaba Buyer Due Diligence：用 AI，打造适合自己的买家背调流程；开源 · Codex Skill · 自由定制](assets/social-preview.png)
+
 本地 Alibaba 每日客户背调 Skill，`0.2.0-rc.3`。包含后台自动采集：每日建档客户列表 → 客户详情 → 买家主页 → 私有 v3 JSON/XLSX → 公开背调 → 全量研究、总报告、矩阵、观察池及合格匹配客户 PDF。也保留已有每日导出文件输入模式。**采集必须使用原生 Chrome DevTools；没有数据上传或数据库连接功能。**
 
 当前检查与剩余边界见 [本地验收记录](VALIDATION.md)。
