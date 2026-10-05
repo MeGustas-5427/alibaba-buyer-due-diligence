@@ -17,8 +17,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/"scripts"))
 from extract_research_view import Invalid, atomic, encode, read_json, require
-from workflow import (STAGES, event, inspect, load_state, locked, normalized,
-                      reconcile, save_state, status)
+from workflow import (event, inspect, load_state, locked, normalized,
+                      reconcile, research_offset, save_state, stages, status)
 
 EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "Stop")
 
@@ -86,14 +86,15 @@ def handle(payload):
         if event_name not in seen:
             seen.append(event_name)
         index, reason = reconcile(run, state)
-        event(run, "hook_"+event_name, STAGES[index] if index < 7 else None)
-        active = state["status"] == "active" and index < 7
-        message = f"Alibaba due diligence run {run.name}: {STAGES[index] if index < 7 else 'complete'}. {reason} Run workflow.py next --run \"{run}\"."
+        sequence = stages(state)
+        event(run, "hook_"+event_name, sequence[index] if index < len(sequence) else None)
+        active = state["status"] == "active" and index < len(sequence)
+        message = f"Alibaba due diligence run {run.name}: {sequence[index] if index < len(sequence) else 'complete'}. {reason} Run workflow.py next --run \"{run}\"."
         result = {}
         if event_name == "SessionStart":
             result = context(event_name, message)
         elif event_name == "PreToolUse" and active:
-            denial = premature(payload, run, index)
+            denial = premature(payload, run, index-research_offset(state))
             if denial:
                 result = {"hookSpecificOutput": {"hookEventName": event_name, "permissionDecision": "deny", "permissionDecisionReason": denial+" "+message}}
         elif event_name == "PostToolUse" and active:

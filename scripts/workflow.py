@@ -15,7 +15,7 @@ from extract_research_view import (Invalid, atomic, digest, encode, now, read_js
 from validate_report import draft, eligible, matched_content, reports, validate_research
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.1.0-rc.1"
+VERSION = "0.2.0-rc.3"
 STAGES = ("input_validated", "research_prepared", "research_recorded", "identity_classified", "analysis_validated", "reports_validated", "final_validated")
 HELP = (
     "Validate immutable JSON/XLSX input and optional upstream receipt.",
@@ -25,6 +25,21 @@ HELP = (
     "Complete all nine dimensions, risk coverage and evidence-based/null scores.",
     "Generate reports, inspect every PDF page, then save visual-review.json bound to this PDF hash (see contract).",
     "Finalize: recheck all inputs, evidence, reports and PDF; delete only the temporary research view.")
+
+
+def stages(state):
+    return tuple("collection."+p for p in collection.PHASES) + tuple("research."+s for s in STAGES) if state.get("collection") else STAGES
+
+
+def instructions(state):
+    return collection.HELP + HELP if state.get("collection") else HELP
+
+
+def research_offset(state):
+    return len(collection.PHASES) if state.get("collection") else 0
+
+
+from collection import collect as collection
 
 
 def normalized(path):
@@ -65,7 +80,7 @@ def locked(path):
 
 
 def rules_hash():
-    names = ["SKILL.md", "requirements.txt", *[p.relative_to(ROOT).as_posix() for directory, pattern in (("scripts", "*.py"), ("hooks", "*.py"), ("references", "*.md"), ("assets", "*.html")) for p in (ROOT/directory).glob(pattern)]]
+    names = ["SKILL.md", "requirements.txt", *[p.relative_to(ROOT).as_posix() for p in (ROOT/"scripts"/"collection").glob("*.js")], "scripts/collection/package.json", *[p.relative_to(ROOT).as_posix() for directory, pattern in (("scripts", "*.py"), ("scripts", "*.ps1"), ("hooks", "*.py"), ("references", "*.md"), ("assets", "*.html")) for p in (ROOT/directory).rglob(pattern)]]
     return hashlib.sha256(encode({n: digest(ROOT/n) for n in sorted(names)}).encode()).hexdigest()
 
 
@@ -141,6 +156,10 @@ def validate_products(run, state, view, data, summary):
 
 
 def check_stage(run, state, index, view=None):
+    offset = research_offset(state)
+    if index < offset:
+        return collection.validate(run, state, index)
+    index -= offset
     view = inputs(state) if view is None else view
     if index == 0:
         return snapshot(run, state)
@@ -165,20 +184,40 @@ def check_stage(run, state, index, view=None):
     return snapshot(run, state, names)
 
 
+def no_customers_receipt(run, state):
+    proof = collection.validate(run, state, 0)
+    require(proof["summary"]["uniqueCustomers"] == 0, "not an empty successful collection")
+    require(state["proofs"].get("collection.input_resolved") == proof, "zero-customer proof changed")
+    return {"schemaVersion": "alibaba.buyer-due-diligence.validation.v1", "status": "completed_no_customers",
+            "runId": state["runId"], "sourceDate": state["collection"]["targetDate"], "customerCount": 0,
+            "collectionProof": proof, "rulesSha256": state["rulesSha256"],
+            "researchStatus": "not_applicable_no_customers", "pdfStatus": "skipped_no_customers"}
+
+
 def inspect(run, state=None):
     state = state or load_state(run)
+    sequence = stages(state)
+    offset = research_offset(state)
     try:
-        view = inputs(state)
+        require(state["rulesSha256"] == rules_hash(), "rules changed; initialize a new run and revalidate")
+        if state.get("noCustomers"):
+            expected = no_customers_receipt(run, state)
+            require(read_json(Path(run)/"validation.json") == expected, "no-customers receipt mismatch")
+            require(not state["inputs"] and not (Path(run)/"research.json").exists() and not (Path(run)/"matched.pdf").exists(), "unexpected research in empty run")
+            return len(sequence), "Successful list API returned zero customers; no research/PDF required."
     except Exception as exc:
         return 0, safe_error(exc)
-    for i, stage in enumerate(STAGES):
+    view = None
+    for i, stage in enumerate(sequence):
         if stage not in state["proofs"]:
-            return i, HELP[i]
+            return i, instructions(state)[i]
         try:
+            if i == offset:
+                view = inputs(state)
             require(check_stage(run, state, i, view) == state["proofs"][stage], "artifact changed since stage validation")
         except Exception as exc:
             return i, safe_error(exc)
-    return len(STAGES), "All local checks passed."
+    return len(sequence), "All local checks passed."
 
 
 def safe_error(exc):
@@ -198,14 +237,15 @@ def safe_error(exc):
 
 def reconcile(run, state):
     index, reason = inspect(run, state)
-    if index < len(STAGES):
-        for stage in STAGES[index:]:
+    sequence = stages(state)
+    if index < len(sequence):
+        for stage in sequence[index:]:
             state["proofs"].pop(stage, None)
             state["checks"][stage] = "pending"
-        if state["status"] in {"completed", "completed_with_limitations"}:
+        if state["status"] in {"completed", "completed_with_limitations", "completed_no_customers"}:
             state["status"] = "active"
         if (Path(run)/"validation.json").exists():
-            atomic(Path(run)/"validation.json", {"schemaVersion": "alibaba.buyer-due-diligence.validation.v1", "status": "failed_validation", "reason": reason, "nextStage": STAGES[index]})
+            atomic(Path(run)/"validation.json", {"schemaVersion": "alibaba.buyer-due-diligence.validation.v1", "status": "failed_validation", "reason": reason, "nextStage": sequence[index]})
     return index, reason
 
 
@@ -250,28 +290,45 @@ def advance(run, finalize=False, browser=None):
         state = load_state(run)
         index, _ = reconcile(run, state)
         save_state(run, state)
-        require(state["status"] in {"active", "completed", "completed_with_limitations"}, "run paused/cancelled/blocked; explicitly resume first")
-        if index == len(STAGES):
+        require(state["status"] in {"active", "completed", "completed_with_limitations", "completed_no_customers"}, "run paused/cancelled/blocked; explicitly resume first")
+        sequence = stages(state)
+        offset = research_offset(state)
+        if index == len(sequence):
             return status(run, state)
-        stage = STAGES[index]
+        stage = sequence[index]
+        research_index = index - offset
         try:
             if finalize:
-                require(index == 6, "cannot finalize before " + stage)
+                require(research_index == len(STAGES)-1, "cannot finalize before " + stage)
+            if index < offset:
+                proof = collection.advance(run, state, index)
+                state["proofs"][stage] = proof
+                state["checks"][stage] = "passed"
+                state["lastError"] = None
+                if index == 0 and proof["summary"]["uniqueCustomers"] == 0:
+                    state["noCustomers"] = True
+                    state["status"] = "completed_no_customers"
+                    for remaining in sequence[1:]:
+                        state["checks"][remaining] = "not_applicable_no_customers"
+                    atomic(run/"validation.json", no_customers_receipt(run, state))
+                save_state(run, state)
+                event(run, "stage_passed", stage)
+                return status(run, state)
             view = inputs(state)
             state["checks"][stage] = "running"
             save_state(run, state)
-            if index == 1:
+            if research_index == 1:
                 atomic(run/"research-view.tmp.json", view)
                 atomic(run/"preparation.json", {"viewSha256": hashlib.sha256(encode(view).encode()).hexdigest(), "records": len(view["records"]), "sourceDate": view["sourceDate"]})
                 if not (run/"research.json").exists():
                     atomic(run/"research.json", draft(view, state["inputs"]["json"]["sha256"]))
-            if index == 5:
+            if research_index == 5:
                 data, summary = research(run, state, view)
                 generate_products(run, state, view, data, summary, browser)
-            if index == 6:
+            if research_index == 6:
                 # Do not trust a hand-edited stage flag: all actual proofs are re-evaluated.
-                for j in range(6):
-                    require(state["proofs"].get(STAGES[j]) == check_stage(run, state, j, view), "prerequisite proof missing or changed")
+                for j in range(index):
+                    require(state["proofs"].get(sequence[j]) == check_stage(run, state, j, view), "prerequisite proof missing or changed")
                 data, summary = research(run, state, view)
                 products, _ = validate_products(run, state, view, data, summary)
                 fields = receipt_fields(run, state, view, data, summary, set(products) | {"preparation.json"})
@@ -281,7 +338,7 @@ def advance(run, finalize=False, browser=None):
                 atomic(run/"validation.json", {**fields, "checkedAt": now()})
                 state["status"] = fields["status"]
             state["proofs"][stage] = check_stage(run, state, index, view)
-            state["checks"][stage] = "limited" if (2 <= index <= 4 and research(run, state, view, min(index-1, 3))[1]["limitations"]) or (index == 6 and state["status"] == "completed_with_limitations") else "passed"
+            state["checks"][stage] = "limited" if (2 <= research_index <= 4 and research(run, state, view, min(research_index-1, 3))[1]["limitations"]) or (research_index == 6 and state["status"] == "completed_with_limitations") else "passed"
             state["lastError"] = None
             state["stopGuard"] = {"fingerprint": None, "attempts": 0}
             event(run, "stage_passed", stage)
@@ -296,8 +353,8 @@ def advance(run, finalize=False, browser=None):
     return status(run)
 
 
-def initialize(input_path, xlsx_path, workspace, out=None, phase=None, session=None, skip_reason=None, skip_approval=None):
-    view = validate_pair(input_path, xlsx_path, phase)
+def initialize(input_path, xlsx_path, workspace, out=None, phase=None, session=None, skip_reason=None, skip_approval=None, collect_config=None):
+    view = {"sourceDate": collect_config["targetDate"]} if collect_config else validate_pair(input_path, xlsx_path, phase)
     workspace = Path(workspace).resolve()
     require(workspace.is_dir(), "workspace must exist")
     require(bool(skip_reason) == bool(skip_approval), "PDF skip requires reason and explicit user approval")
@@ -312,6 +369,11 @@ def initialize(input_path, xlsx_path, workspace, out=None, phase=None, session=N
         "inputs": {k: {"path": str(Path(p).resolve()), "sha256": digest(p)} if p else None for k, p in (("json", input_path), ("xlsx", xlsx_path), ("phase", phase))},
         "pdfPolicy": {"mode": "skip_user" if skip_reason else "required_when_matched", "reason": skip_reason, "approval": skip_approval},
         "proofs": {}, "checks": {s: "pending" for s in STAGES}, "lastError": None, "stopGuard": {"fingerprint": None, "attempts": 0}, "hookEventsObserved": []}
+    if collect_config:
+        state["collection"] = collect_config
+        state["inputs"] = {}
+        state["checks"] = {s: "pending" for s in stages(state)}
+        collection.folder(run).mkdir()
     save_state(run, state)
     event(run, "initialized")
     if session:
@@ -326,9 +388,11 @@ def initialize(input_path, xlsx_path, workspace, out=None, phase=None, session=N
 def status(run, state=None):
     state = state or load_state(run)
     i, reason = inspect(run, state)
-    return {"run": str(Path(run).resolve()), "status": state["status"] if i == 7 or state["status"] in {"paused", "blocked", "cancelled"} else "active", "complete": i == 7,
-            "nextStage": STAGES[i] if i < 7 else None, "instruction": HELP[i] if i < 7 else "Done", "detail": state.get("lastError") or reason,
-            "checks": {s: state["checks"].get(s, "pending") if j <= i else "pending" for j, s in enumerate(STAGES)},
+    sequence, guidance = stages(state), instructions(state)
+    complete = i == len(sequence)
+    return {"run": str(Path(run).resolve()), "status": state["status"] if complete or state["status"] in {"paused", "blocked", "cancelled"} else "active", "complete": complete,
+            "nextStage": sequence[i] if not complete else None, "instruction": guidance[i] if not complete else "Done", "detail": state.get("lastError") or reason,
+            "checks": {s: state["checks"].get(s, "pending") if j <= i else "pending" for j, s in enumerate(sequence)},
             "hookEventsObserved": state.get("hookEventsObserved", []), "hookActivation": "not_certified; native trust and live probes are separate"}
 
 
@@ -344,6 +408,38 @@ def main():
     init.add_argument("--session-id", default=os.environ.get("CODEX_THREAD_ID"))
     init.add_argument("--skip-pdf-reason")
     init.add_argument("--skip-pdf-approval", help="Exact user instruction authorizing this skip")
+    collect = sub.add_parser("collect")
+    collect.add_argument("--workspace", type=Path, default=Path.cwd())
+    collect.add_argument("--out", type=Path)
+    collect.add_argument("--target-date")
+    collect.add_argument("--dictionary", type=Path)
+    collect.add_argument("--sales-map", type=Path)
+    collect.add_argument("--node")
+    collect.add_argument("--session-id", default=os.environ.get("CODEX_THREAD_ID"))
+    diagnostic = sub.add_parser("diagnose")
+    diagnostic.add_argument("--run", required=True, type=Path)
+    diagnostic.add_argument("--signal", choices=collection.SIGNALS, action="append", default=[])
+    helper = sub.add_parser("browser-helper", help="Optional, explicitly authorized Windows AHK helper lifecycle; no bundled clicker")
+    helper.add_argument("--run", required=True, type=Path)
+    helper.add_argument("--action", required=True, choices=("inspect", "start", "stop"))
+    helper.add_argument("--executable", type=Path)
+    helper.add_argument("--script", type=Path)
+    helper.add_argument("--approval", help="Exact current user instruction authorizing this reviewed helper")
+    helper.add_argument("--host-policy", help="Current host rule permitting this native DevTools/helper surface")
+    helper.add_argument("--signal", choices=collection.SIGNALS, action="append", default=[])
+    for p in (diagnostic, helper):
+        p.add_argument("--devtools-authorized", action="store_true", help="Records existing current-task approval; does not grant it")
+        p.add_argument("--host-allows-devtools", action="store_true", help="Records that applicable host rules permit the required native Chrome DevTools channel")
+        p.add_argument("--ahk-authorized", action="store_true", help="Separate current approval for the exact reviewed local helper; optional")
+    receiver = sub.add_parser("receiver")
+    receiver.add_argument("--run", required=True, type=Path)
+    receiver.add_argument("--kind", required=True, choices=("list", "detail", "profile"))
+    receiver.add_argument("--port", type=int, default=17889)
+    receiver.add_argument("--resume-after-review", action="store_true", help="Only after verifying the prior API/login/risk failure is resolved")
+    for name in ("receiver-status", "receiver-stop"):
+        control = sub.add_parser(name)
+        control.add_argument("--run", required=True, type=Path)
+        control.add_argument("--kind", required=True, choices=("list", "detail", "profile"))
     for name in ("next", "status", "advance", "finalize", "pause", "block", "cancel", "resume"):
         p = sub.add_parser(name)
         p.add_argument("--run", required=True, type=Path)
@@ -353,7 +449,24 @@ def main():
             p.add_argument("--reason", required=True)
     args = parser.parse_args()
     try:
-        if args.command == "init":
+        if args.command == "collect":
+            config = collection.configuration(args.target_date, args.dictionary, args.sales_map, args.node)
+            result = initialize(None, None, args.workspace, args.out, session=args.session_id, collect_config=config)
+        elif args.command == "receiver":
+            from collection.receiver import serve
+            return serve(args.run, args.kind, args.port, args.resume_after_review)
+        elif args.command in {"receiver-status", "receiver-stop"}:
+            from collection.receiver import control
+            result = control(args.run, args.kind, stop=args.command == "receiver-stop")
+        elif args.command == "diagnose":
+            result = collection.diagnose(args.run, args.signal, devtools_authorized=args.devtools_authorized,
+                                        host_allows_devtools=args.host_allows_devtools, ahk_authorized=args.ahk_authorized)
+        elif args.command == "browser-helper":
+            from collection.browser_helper import operate
+            result = operate(args.run, args.action, executable=args.executable, script=args.script,
+                             approval=args.approval, host_policy=args.host_policy, signals=args.signal,
+                             devtools_authorized=args.devtools_authorized, host_allows_devtools=args.host_allows_devtools, ahk_authorized=args.ahk_authorized)
+        elif args.command == "init":
             result = initialize(args.input, args.xlsx, args.workspace, args.out, args.phase_status, args.session_id, args.skip_pdf_reason, args.skip_pdf_approval)
         elif args.command in {"advance", "finalize"}:
             result = advance(args.run, args.command == "finalize", getattr(args, "chrome", None))
@@ -371,7 +484,7 @@ def main():
                 event(args.run, args.command)
             result = status(args.run)
         print(encode(result))
-        return 0
+        return 2 if (args.command == "diagnose" and result["status"] == "stop") or (args.command == "browser-helper" and result["status"] == "unverified") else 0
     except Exception as exc:
         print(encode({"status": "failed_validation", "error": safe_error(exc)}))
         return 2

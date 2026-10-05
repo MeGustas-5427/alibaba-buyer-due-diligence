@@ -238,6 +238,47 @@ def project(payload, batch_size=10):
     return {"schemaVersion": VIEW_SCHEMA, "sourceDate": source_date, "records": rows}
 
 
+def write_workbook(path, payload, batch_size=10):
+    """Use the same 26-field projection as validation; never create formulas."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    view = project(payload, batch_size)
+    rows = view["records"]
+    batches = (len(rows) + batch_size - 1) // batch_size
+    book = Workbook()
+    book.active.title = "背调输入"
+    sheets = {"背调输入": rows, **{f"批次{b:02d}": [r for r in rows if r["batchNo"] == b] for b in range(1, batches+1)}}
+    for name, data in sheets.items():
+        sheet = book[name] if name in book.sheetnames else book.create_sheet(name)
+        sheet.append([label for _, label in HEADERS])
+        for row in data:
+            sheet.append([cell_text(row[key]) for key, _ in HEADERS])
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        for row in sheet:
+            for cell in row:
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        for column in sheet.columns:
+            sheet.column_dimensions[column[0].column_letter].width = min(50, max(12, max(len(str(c.value or "")) for c in column)+2))
+    meta = book.create_sheet("生成说明")
+    for row in [("项目", "值"), ("schemaVersion", "nanyue.due-diligence-research-view.v1"), ("generatedAt", payload["generatedAt"]), ("sourceDate", payload["sourceDate"]), ("batchSize", batch_size), ("batchCount", batches)]:
+        meta.append(row)
+    path = Path(path)
+    require(not path.is_symlink(), "refusing symlink output")
+    fd, temporary = tempfile.mkstemp(suffix=".xlsx", dir=path.parent)
+    os.close(fd)
+    try:
+        book.save(temporary)
+        os.replace(temporary, path)
+    finally:
+        book.close()
+        Path(temporary).unlink(missing_ok=True)
+
+
 def validate_pair(input_path, xlsx_path, phase_path=None):
     from openpyxl import load_workbook
     payload = read_json(input_path)

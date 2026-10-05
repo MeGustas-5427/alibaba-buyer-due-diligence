@@ -1,6 +1,6 @@
 interface:
   display_name: "Alibaba 每日客户背调"
-  short_description: "核验每日客户导出，生成证据化背调、观察池及匹配客户报告，不含上传"
-  default_prompt: "使用 $alibaba-buyer-due-diligence 对这批 Alibaba 每日导出执行本地客户背调，不上传数据。"
+  short_description: "原生 Chrome DevTools 采集 Alibaba 客户，执行本地背调和报告，不含上传"
+  default_prompt: "使用 $alibaba-buyer-due-diligence，必须通过原生 Chrome DevTools 采集昨天建档的 Alibaba 客户，完成公开背调与本地报告，不使用浏览器扩展、不上传数据。"
 policy:
   allow_implicit_invocation: true

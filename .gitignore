@@ -16,3 +16,16 @@ events.jsonl
 research-view.tmp.json
 .DS_Store
 Thumbs.db
+list.wrapper.json
+queryCustomerList.*.json
+detail_missing_fields.jsonl
+buyer_profile_fields.jsonl
+*progress.json
+*errors.jsonl
+phase_status.json
+receiver-*.json
+browser-helper-*.private.json
+inject-*.js
+nanyue_due_diligence_input_*.json
+nanyue_due_diligence_input_*.xlsx
+crm_value_dictionaries.json

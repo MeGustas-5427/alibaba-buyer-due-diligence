@@ -379,11 +379,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    from workflow import advance, inspect, load_state
+    from workflow import advance, inspect, load_state, research_offset
     from extract_research_view import require, encode
     state = load_state(args.run)
     index, _ = inspect(args.run, state)
-    require(index == 5, "PDF entry requires all analysis prerequisites; use workflow.py next")
+    require(index-research_offset(state) == 5, "PDF entry requires all analysis prerequisites; use workflow.py next")
     print(encode(advance(args.run, browser=args.chrome)))
 
 
